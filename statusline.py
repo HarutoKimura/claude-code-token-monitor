@@ -5,9 +5,9 @@
 # ============================================
 
 # Display settings (True = show, False = hide)
-SHOW_LINE1    = True   # [Sonnet 4] | 🌿 main M2 | 📁 project | 💬 254
-SHOW_LINE2    = True   # Compact: 91.8K/160.0K ████████▒▒▒ 58%
-SHOW_LINE3    = True   # Session: 1h15m/5h ███▒▒▒▒▒▒▒▒ 25%
+SHOW_LINE1    = True   # [Opus 4.6] | 🌿 main M2 | 📁 project | 💬 254
+SHOW_LINE2    = True   # Compact: 164.0K/200.0K ████████▒▒▒ 82%
+SHOW_LINE3    = False  # Session: 1h15m/5h ███▒▒▒▒▒▒▒▒ 25% (local estimate only, not actual Anthropic rate limit)
 SHOW_LINE4    = True   # Burn: 14.0M ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁
 SHOW_SCHEDULE = True   # 📅 14:00 Meeting (in 30m) - swaps with Line1
 
@@ -35,12 +35,25 @@ from datetime import datetime, timedelta, timezone, date
 import time
 from collections import defaultdict
 
+# Active Claude config directory (supports multi-account setups like cc/cc2)
+def get_claude_config_dir():
+    return Path(os.environ.get('CLAUDE_CONFIG_DIR', '~/.claude')).expanduser()
+
+def get_projects_dir():
+    projects_override = os.environ.get('CLAUDE_PROJECTS_DIR')
+    if projects_override:
+        return Path(projects_override).expanduser()
+    return CLAUDE_CONFIG_DIR / 'projects'
+
+CLAUDE_CONFIG_DIR = get_claude_config_dir()
+STATUSLINE_ERROR_LOG = CLAUDE_CONFIG_DIR / 'statusline-error.log'
+
 # CONSTANTS
 
-# Token compaction threshold - FALLBACK VALUE ONLY
-# Dynamic value is now calculated from API: context_window_size * 0.8
+# Context window size - FALLBACK VALUE ONLY
+# Dynamic value is now read from API: context_window_size
 # This constant is kept for backwards compatibility if API data is unavailable
-COMPACTION_THRESHOLD = 200000 * 0.8  # 80% of 200K tokens (fallback)
+COMPACTION_THRESHOLD = 200000  # 200K tokens (fallback)
 
 # TWO DISTINCT TOKEN CALCULATION SYSTEMS
 
@@ -48,12 +61,11 @@ COMPACTION_THRESHOLD = 200000 * 0.8  # 80% of 200K tokens (fallback)
 
 # 🗜️ COMPACT LINE SYSTEM (Conversation Compaction)
 # ==============================================
-# Purpose: Tracks current conversation progress toward compaction threshold
-# Data Source: Current conversation tokens (until 160K compaction limit)
-# Scope: Single conversation, monitors compression timing
-# Calculation: block_stats['total_tokens'] from detect_five_hour_blocks()
-# Display: Compact line (Line 2) - "118.1K/160.0K ████████▒▒▒▒ 74%"
-# Range: 0-200K tokens (until conversation gets compressed)
+# Purpose: Tracks current context window usage
+# Data Source: API-provided used_percentage (v2.1.6+), fallback to transcript tokens
+# Scope: Single conversation, monitors context window fill level
+# Display: Compact line (Line 2) - "164.0K/200.0K ████████▒▒▒▒ 82%"
+# Range: 0-200K tokens (context window size)
 # Reset Point: When conversation gets compacted/compressed
 
 # 🕐 SESSION WINDOW SYSTEM (Session Management)
@@ -67,7 +79,7 @@ COMPACTION_THRESHOLD = 200000 * 0.8  # 80% of 200K tokens (fallback)
 # Reset Point: Every 5 hours per usage limits
 
 # ⚠️  CRITICAL RULES:
-# 1. COMPACT = conversation compaction monitoring (160K threshold)
+# 1. COMPACT = context window usage monitoring (200K window)
 # 2. SESSION/BURN = usage window tracking
 # 3. These track DIFFERENT concepts: compression vs usage periods
 # 4. Compact = compression timing, Session = official usage window
@@ -350,7 +362,7 @@ def calculate_dynamic_padding(compact_text, session_text):
     """Calculate dynamic padding to align progress bars
     
     Args:
-        compact_text: Text part of compact line (e.g., "Compact: 111.6K/160.0K")
+        compact_text: Text part of compact line (e.g., "Compact: 164.0K/200.0K")
         session_text: Text part of session line (e.g., "Session: 3h26m/5h")
     
     Returns:
@@ -371,12 +383,30 @@ def calculate_dynamic_padding(compact_text, session_text):
     else:
         return ' '
 
-def get_progress_bar(percentage, width=20, show_current_segment=False):
-    """Create a visual progress bar with optional current segment highlighting"""
+def get_progress_bar(percentage, width=20, show_current_segment=False, threshold_marker_percent=None):
+    """Create a visual progress bar with optional highlights/threshold marker"""
     filled = int(width * percentage / 100)
     empty = width - filled
     
     color = get_percentage_color(percentage)
+
+    if threshold_marker_percent is not None:
+        # Place marker at threshold position (ceiling to warn right before crossing)
+        marker_index = ((width * threshold_marker_percent + 99) // 100) - 1
+        marker_index = max(0, min(width - 1, marker_index))
+
+        segments = []
+        for i in range(width):
+            if show_current_segment and i == filled and filled < width:
+                segments.append(Colors.BRIGHT_WHITE + '▓' + Colors.RESET)
+            elif i < filled:
+                segments.append(color + '█' + Colors.RESET)
+            else:
+                segments.append(Colors.LIGHT_GRAY + '▒' + Colors.RESET)
+
+        # Red vertical line for compaction threshold visibility (e.g. 85%)
+        segments[marker_index] = Colors.BRIGHT_RED + Colors.BOLD + '|' + Colors.RESET
+        return ''.join(segments)
     
     if show_current_segment and filled < width:
         # 完了済みは元の色を保持、現在進行中のセグメントのみ特別表示
@@ -559,7 +589,7 @@ def calculate_tokens_from_transcript(file_path):
         return 0, 0, 0, 0, 0, 0, 0, 0, 0
     except Exception as e:
         # Log error for debugging
-        with open(Path.home() / '.claude' / 'statusline-error.log', 'a') as f:
+        with open(STATUSLINE_ERROR_LOG, 'a') as f:
             f.write(f"\n{datetime.now()}: Error in calculate_tokens_from_transcript: {e}\n")
             f.write(f"File path: {file_path}\n")
         return 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -580,7 +610,7 @@ def find_session_transcript(session_id):
     if not session_id:
         return None
     
-    projects_dir = Path.home() / '.claude' / 'projects'
+    projects_dir = get_projects_dir()
     
     if not projects_dir.exists():
         return None
@@ -600,7 +630,7 @@ def find_all_transcript_files(hours_limit=6):
         hours_limit: Only return files modified within this many hours (default: 6)
                      Set to None to return all files (not recommended for performance)
     """
-    projects_dir = Path.home() / '.claude' / 'projects'
+    projects_dir = get_projects_dir()
 
     if not projects_dir.exists():
         return []
@@ -1420,7 +1450,7 @@ def get_schedule_cache_file():
     """Get schedule cache file path (lazy initialization)"""
     global SCHEDULE_CACHE_FILE
     if SCHEDULE_CACHE_FILE is None:
-        SCHEDULE_CACHE_FILE = Path.home() / '.claude' / '.schedule_cache.json'
+        SCHEDULE_CACHE_FILE = CLAUDE_CONFIG_DIR / '.schedule_cache.json'
     return SCHEDULE_CACHE_FILE
 
 def parse_event_time(event):
@@ -1729,49 +1759,61 @@ def detect_active_periods(messages, idle_threshold=5*60):
 
 def calculate_cost(input_tokens, output_tokens, cache_creation, cache_read, model_name="Unknown"):
     """Calculate estimated cost based on token usage
-    
-    Pricing (per million tokens) - Claude 4 models (2025):
-    
-    Claude Opus 4 / Opus 4.1:
-    - Input: $15.00
-    - Output: $75.00
-    - Cache write: $18.75 (input * 1.25)
-    - Cache read: $1.50 (input * 0.10)
-    
-    Claude Sonnet 4:
+
+    Pricing (per million tokens) - Claude models (2025):
+
+    Claude Haiku 4.5:
+    - Input: $1.00
+    - Output: $5.00
+    - Cache write: $1.25 (input * 1.25)
+    - Cache read: $0.10 (input * 0.10)
+
+    Claude Sonnet 4.5:
     - Input: $3.00
     - Output: $15.00
     - Cache write: $3.75 (input * 1.25)
     - Cache read: $0.30 (input * 0.10)
-    
-    Claude 3.5 Haiku (if still used):
-    - Input: $1.00
-    - Output: $5.00
-    - Cache write: $1.25
-    - Cache read: $0.10
+
+    Claude Opus 4.5 / Opus 4.6:
+    - Input: $5.00
+    - Output: $25.00
+    - Cache write: $6.25 (input * 1.25)
+    - Cache read: $0.50 (input * 0.10)
+
+    Legacy Claude Opus 4 / Opus 4.1:
+    - Input: $15.00
+    - Output: $75.00
+    - Cache write: $18.75 (input * 1.25)
+    - Cache read: $1.50 (input * 0.10)
     """
-    
+
     # モデル名からタイプを判定
     model_lower = model_name.lower()
-    
+
     if "haiku" in model_lower:
-        # Claude 3.5 Haiku pricing (legacy)
+        # Haiku 4.5 pricing
         input_rate = 1.00
         output_rate = 5.00
         cache_write_rate = 1.25
         cache_read_rate = 0.10
     elif "sonnet" in model_lower:
-        # Claude Sonnet 4 pricing
+        # Sonnet 4.5 pricing
         input_rate = 3.00
         output_rate = 15.00
         cache_write_rate = 3.75
         cache_read_rate = 0.30
-    else:
-        # Default to Opus 4/4.1 pricing (most expensive, safe default)
+    elif "opus" in model_lower and re.search(r'4[.\-][01]', model_lower):
+        # Legacy Opus 4/4.1 pricing
         input_rate = 15.00
         output_rate = 75.00
         cache_write_rate = 18.75
         cache_read_rate = 1.50
+    else:
+        # Default to Opus 4.5/4.6 pricing
+        input_rate = 5.00
+        output_rate = 25.00
+        cache_write_rate = 6.25
+        cache_read_rate = 0.50
     
     # コスト計算（per million tokens）
     input_cost = (input_tokens / 1_000_000) * input_rate
@@ -1931,7 +1973,7 @@ def format_output_full(ctx, terminal_width=None):
 
     Example:
     [Son4] | 🌿 main M2 | 📁 statusline | 💬 254 | 💰 $1.23
-    Compact: ████████▒▒▒▒▒▒▒ [58%] 91.8K/160.0K ♻️ 99%
+    Compact: ████████▒▒▒▒▒▒▒ [58%] 116.0K/200.0K ♻️ 99%
     Session: ███▒▒▒▒▒▒▒▒▒▒▒▒ [25%] 1h15m/5h (08:00-13:00)
     Burn:    ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁ 14.0M tok
 
@@ -2028,7 +2070,7 @@ def format_output_full(ctx, terminal_width=None):
             percentage_display = f"{percentage_color}{Colors.BOLD}[{percentage}%]{Colors.RESET}"
 
         line2_parts.append(compact_label)
-        line2_parts.append(get_progress_bar(percentage, width=20))
+        line2_parts.append(get_progress_bar(percentage, width=20, threshold_marker_percent=85))
         line2_parts.append(percentage_display)
         line2_parts.append(f"{Colors.BRIGHT_WHITE}{compact_display}/{format_token_count(ctx['compaction_threshold'])}{Colors.RESET}")
 
@@ -2061,7 +2103,7 @@ def format_output_compact(ctx):
 
     Example:
     [Son4] main M2+1 statusline 💬254
-    C: ████████▒▒▒ [58%] 91K/160K
+    C: ████████▒▒▒ [58%] 116K/200K
     S: ███▒▒▒▒▒▒▒▒ [25%] 1h15m/5h
     B: ▁▂▃▄▅▆▇█▇▆▅ 14M
     """
@@ -2096,7 +2138,7 @@ def format_output_compact(ctx):
         threshold_display = format_token_count_short(ctx['compaction_threshold'])
         percentage_color = get_percentage_color(percentage)
 
-        line2 = f"{Colors.BRIGHT_CYAN}C:{Colors.RESET} {get_progress_bar(percentage, width=12)} "
+        line2 = f"{Colors.BRIGHT_CYAN}C:{Colors.RESET} {get_progress_bar(percentage, width=12, threshold_marker_percent=85)} "
         line2 += f"{percentage_color}[{percentage}%]{Colors.RESET} "
         line2 += f"{Colors.BRIGHT_WHITE}{compact_display}/{threshold_display}{Colors.RESET}"
         lines.append(line2)
@@ -2149,7 +2191,7 @@ def format_output_tight(ctx):
         compact_display = format_token_count_short(ctx['compact_tokens'])
         percentage_color = get_percentage_color(percentage)
 
-        line2 = f"{Colors.BRIGHT_CYAN}C:{Colors.RESET} {get_progress_bar(percentage, width=8)} "
+        line2 = f"{Colors.BRIGHT_CYAN}C:{Colors.RESET} {get_progress_bar(percentage, width=8, threshold_marker_percent=85)} "
         line2 += f"{percentage_color}[{percentage}%]{Colors.RESET} {Colors.BRIGHT_WHITE}{compact_display}{Colors.RESET}"
         lines.append(line2)
 
@@ -2172,7 +2214,7 @@ def format_output_minimal(ctx, terminal_width):
     """Minimal 1-line mode for short terminal heights (<= 8 lines)
 
     Example:
-    Cpt58% 91K/160K ♻99%
+    Cpt58% 116K/200K ♻99%
     """
     percentage = ctx['percentage']
     compact_display = format_token_count_short(ctx['compact_tokens'])
@@ -2221,7 +2263,7 @@ def main():
         print()
         print("Options:")
         print("  --show 1,2,3,4    Show specific lines (comma-separated)")
-        print("  --show simple     Show compact and session lines (2,3)")
+        print("  --show simple     Show compact and burn lines (2,4)")
         print("  --show all        Show all lines")
         print("  --schedule        Show next calendar event (swaps with Line 1)")
         print("  --help            Show this help")
@@ -2236,7 +2278,7 @@ def main():
         if args.show.lower() == 'all':
             SHOW_LINE1 = SHOW_LINE2 = SHOW_LINE3 = SHOW_LINE4 = True
         elif args.show.lower() == 'simple':
-            SHOW_LINE2 = SHOW_LINE3 = True  # Show lines 2,3 (compact and session)
+            SHOW_LINE2 = SHOW_LINE4 = True  # Show lines 2,4 (compact and burn)
         else:
             # Parse comma-separated line numbers
             try:
@@ -2281,8 +2323,9 @@ def main():
         api_used_percentage = api_context.get('used_percentage')  # v2.1.6+
         api_remaining_percentage = api_context.get('remaining_percentage')  # v2.1.6+
 
-        # Dynamic compaction threshold (80% of context window)
-        compaction_threshold = api_context_size * 0.8
+        # Context window size for display (full size, not 80%)
+        # The percentage from the API is relative to the full context window
+        compaction_threshold = api_context_size
 
         # Extract basic values
         model = data.get('model', {}).get('display_name', 'Unknown')
@@ -2354,7 +2397,7 @@ def main():
                          input_tokens, output_tokens, cache_creation, cache_read) = calculate_tokens_from_transcript(transcript_file)
                     except Exception as e:
                         # Log error for debugging Compact freeze issue
-                        with open(Path.home() / '.claude' / 'statusline-error.log', 'a') as f:
+                        with open(STATUSLINE_ERROR_LOG, 'a') as f:
                             f.write(f"\n{datetime.now()}: Error calculating Compact tokens: {e}\n")
                             f.write(f"Transcript file: {transcript_file}\n")
                         # Use block_stats as fallback if available
@@ -2390,16 +2433,17 @@ def main():
                     (total_tokens, _, error_count, user_messages, assistant_messages,
                      input_tokens, output_tokens, cache_creation, cache_read) = calculate_tokens_from_transcript(transcript_file)
         
-        # Calculate percentage for Compact display (dynamic threshold)
-        # Prefer API-provided percentage (v2.1.6+) for accuracy, fallback to manual calculation
-        compact_tokens = total_tokens
+        # Calculate percentage for Compact display
+        # Prefer API-provided percentage (v2.1.6+) — it reflects actual context window usage.
+        # Transcript-based token counts are CUMULATIVE (input+output+cache) and do NOT
+        # represent current context window occupancy, so we derive tokens from the API %.
         if api_used_percentage is not None:
-            # Use Claude Code's pre-calculated percentage (more accurate)
             percentage = min(100, round(api_used_percentage))
+            # Derive token count from API percentage so numbers are consistent
+            compact_tokens = int(api_context_size * api_used_percentage / 100)
         else:
-            # Fallback: manual calculation for older Claude Code versions
-            # NOTE: API tokens (total_input/output_tokens) are CUMULATIVE session totals,
-            # NOT current context window usage. Must use transcript-calculated tokens.
+            # Fallback for older Claude Code versions without API percentage
+            compact_tokens = total_tokens
             percentage = min(100, round((compact_tokens / compaction_threshold) * 100))
         
         # Get additional info
@@ -2561,10 +2605,10 @@ def main():
     except Exception as e:
         # Fallback status line on error
         print(f"{Colors.BRIGHT_RED}[Error]{Colors.RESET} . | 0 | 0%")
-        print(f"{Colors.LIGHT_GRAY}Check ~/.claude/statusline-error.log{Colors.RESET}")
+        print(f"{Colors.LIGHT_GRAY}Check {STATUSLINE_ERROR_LOG}{Colors.RESET}")
         
         # Debug logging
-        with open(Path.home() / '.claude' / 'statusline-error.log', 'a') as f:
+        with open(STATUSLINE_ERROR_LOG, 'a') as f:
             f.write(f"{datetime.now()}: {e}\n")
             f.write(f"Input data: {locals().get('input_data', 'No input')}\n\n")
 

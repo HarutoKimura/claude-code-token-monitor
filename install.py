@@ -25,6 +25,21 @@ def print_header():
     print_colored("🚀 Statusline Installer", Colors.BLUE)
     print("==================================")
 
+def get_claude_config_dir():
+    """Resolve active Claude Code config directory."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")
+    return Path(config_dir).expanduser()
+
+def format_home_path(path):
+    """Render paths under home using ~ for readability."""
+    path_str = str(path)
+    home_str = str(Path.home())
+    if path_str == home_str:
+        return "~"
+    if path_str.startswith(home_str + os.sep):
+        return "~" + path_str[len(home_str):]
+    return path_str
+
 def check_requirements():
     """Check if required files and Python version are available"""
     # Check Python version
@@ -43,13 +58,12 @@ def check_requirements():
     print_colored("✅ statusline.py found", Colors.GREEN)
     return statusline_path
 
-def install_statusline(source_path):
-    """Install statusline.py to ~/.claude directory"""
-    claude_dir = Path.home() / ".claude"
+def install_statusline(source_path, claude_dir):
+    """Install statusline.py to active Claude config directory"""
     target_path = claude_dir / "statusline.py"
     
-    print_colored("📁 Creating ~/.claude directory...", Colors.YELLOW)
-    claude_dir.mkdir(exist_ok=True)
+    print_colored(f"📁 Creating {format_home_path(claude_dir)} directory...", Colors.YELLOW)
+    claude_dir.mkdir(parents=True, exist_ok=True)
     
     print_colored(f"📋 Installing statusline to {target_path}...", Colors.YELLOW)
     shutil.copy2(source_path, target_path)
@@ -58,46 +72,45 @@ def install_statusline(source_path):
     print_colored(f"✅ Installed to {target_path}", Colors.GREEN)
     return target_path
 
-def choose_display_option():
+def choose_display_option(statusline_script):
     """Let user choose display option by showing examples"""
     print()
     print_colored("🎨 Choose your status line display:", Colors.BLUE)
     print("="*50)
+    script_command = str(statusline_script)
     
     # Display options with examples
     options = {
         "1": {
-            "name": "Full Display (4 lines)",
-            "command": "~/.claude/statusline.py",
+            "name": "Full Display (3 lines)",
+            "command": script_command,
             "example": [
-                "[Sonnet 4] | 🌿 main M2 +1 | 📁 statusline | 💬 254",
-                "🪙  Compact: 91.8K/160.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031",
-                "⏱️  Session: 1h15m/5h    ███▒▒▒▒▒▒▒▒▒▒▒▒ 25% 09:15 (08:00 to 13:00)",
+                "[Opus 4.6] | 🌿 main M2 +1 | 📁 statusline | 💬 254",
+                "🪙  Compact: 116.0K/200.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031",
                 "🔥 Burn:    2.1K (Rate: 127 t/m) ▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃▄▅▆"
             ]
         },
         "2": {
             "name": "Simple Display (2 lines)",
-            "command": "~/.claude/statusline.py --show simple",
+            "command": f"{script_command} --show simple",
             "example": [
-                "🪙  Compact: 91.8K/160.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031",
-                "⏱️  Session: 1h15m/5h    ███▒▒▒▒▒▒▒▒▒▒▒▒ 25% 09:15 (08:00 to 13:00)"
+                "🪙  Compact: 116.0K/200.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031",
+                "🔥 Burn:    2.1K (Rate: 127 t/m) ▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▂▃▄▅▆"
             ]
         },
         "3": {
-            "name": "Essential Display (3 lines)",
-            "command": "~/.claude/statusline.py --show 1,2,3",
+            "name": "Essential Display (2 lines)",
+            "command": f"{script_command} --show 1,2",
             "example": [
-                "[Sonnet 4] | 🌿 main M2 +1 | 📁 statusline | 💬 254",
-                "🪙  Compact: 91.8K/160.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031",
-                "⏱️  Session: 1h15m/5h    ███▒▒▒▒▒▒▒▒▒▒▒▒ 25% 09:15 (08:00 to 13:00)"
+                "[Opus 4.6] | 🌿 main M2 +1 | 📁 statusline | 💬 254",
+                "🪙  Compact: 116.0K/200.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031"
             ]
         },
         "4": {
             "name": "Minimal Display (1 line)",
-            "command": "~/.claude/statusline.py --show 2",
+            "command": f"{script_command} --show 2",
             "example": [
-                "🪙  Compact: 91.8K/160.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031"
+                "🪙  Compact: 116.0K/200.0K ████████▒▒▒▒▒▒▒ 58% ♻️  99% cached 💰 Cost: $0.031"
             ]
         }
     }
@@ -129,9 +142,9 @@ def choose_display_option():
             print_colored("\n❌ Installation cancelled", Colors.RED)
             sys.exit(1)
 
-def configure_claude_settings(statusline_command):
+def configure_claude_settings(statusline_command, claude_dir):
     """Configure Claude Code settings.json with proper JSON handling"""
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = claude_dir / "settings.json"
     
     # statusLine configuration with chosen command
     statusline_config = {
@@ -214,7 +227,7 @@ def print_success_message(target_path, settings_path, statusline_command):
     print(f"2. Test manually: {statusline_command}")
     print()
     print_colored("💡 Tip: You can change display options anytime:", Colors.BLUE)
-    print("   • Edit ~/.claude/settings.json")
+    print(f"   • Edit {format_home_path(settings_path)}")
     print("   • Or modify SHOW_LINE1-4 variables in statusline.py")
     print("   • Available options: --show simple, --show all, --show 1,2,3,4")
     print()
@@ -224,18 +237,20 @@ def main():
     """Main installation function"""
     try:
         print_header()
+        claude_dir = get_claude_config_dir()
+        print_colored(f"📂 Claude config dir: {format_home_path(claude_dir)}", Colors.BLUE)
         
         # Check requirements
         statusline_path = check_requirements()
         
         # Install statusline
-        target_path = install_statusline(statusline_path)
+        target_path = install_statusline(statusline_path, claude_dir)
         
         # Let user choose display option
-        statusline_command = choose_display_option()
+        statusline_command = choose_display_option(target_path)
         
         # Configure Claude Code settings
-        settings_path = configure_claude_settings(statusline_command)
+        settings_path = configure_claude_settings(statusline_command, claude_dir)
         
         # Print success message
         print_success_message(target_path, settings_path, statusline_command)
