@@ -1,4 +1,4 @@
-# statusline
+# claude-code-token-monitor
 
 Enhanced status line for Claude Code showing token usage and burn rate.
 
@@ -32,8 +32,8 @@ When context window usage reaches 85% of the total (170K/200K):
 ## Installation
 
 ```bash
-git clone https://github.com/usedhonda/statusline.git
-cd statusline
+git clone https://github.com/HarutoKimura/claude-code-token-monitor.git
+cd claude-code-token-monitor
 python3 install.py
 ```
 
@@ -99,3 +99,7 @@ export CLAUDE_CONFIG_DIR="~/.claude-acc2"   # Use a different Claude profile/con
 export CLAUDE_PROJECTS_DIR="/custom/path"    # Optional override for transcript lookup
 export STATUSLINE_NO_COLOR=1  # Disable colors
 ```
+
+## Credits
+
+Based on [usedhonda/statusline](https://github.com/usedhonda/statusline).
